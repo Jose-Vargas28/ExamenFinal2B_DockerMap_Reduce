@@ -1,0 +1,151 @@
+version: '3.8'
+
+services:
+
+  # ── Base de datos ──────────────────────────────────────────────
+  mysql:
+    image: mysql:8.0
+    container_name: mysql-redes
+    environment:
+      MYSQL_ROOT_PASSWORD: password
+      MYSQL_DATABASE: examenad
+    volumes:
+      - dbdata:/var/lib/mysql
+      - ./db/redes.sql:/docker-entrypoint-initdb.d/redes.sql
+    ports:
+      - "3306:3306"
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost", "-uroot", "-ppassword"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    networks:
+      - red-app
+
+  # ── Spring Boot API (dos instancias para el balanceo) ──────────
+  server1:
+    build: ./app
+    container_name: server1
+    environment:
+      DB_HOST: mysql
+      SERVIDOR: "server1"
+    ports:
+      - "8081:8080"
+    depends_on:
+      mysql:
+        condition: service_healthy
+    networks:
+      - red-app
+
+  server2:
+    build: ./app
+    container_name: server2
+    environment:
+      DB_HOST: mysql
+      SERVIDOR: "server2"
+    ports:
+      - "8082:8080"
+    depends_on:
+      mysql:
+        condition: service_healthy
+    networks:
+      - red-app
+
+  # ── Balanceador de carga ────────────────────────────────────────
+  nginx:
+    image: nginx
+    container_name: nginx-balanceador
+    ports:
+      - "8080:80"
+    volumes:
+      - ./nginx/nginx.conf:/etc/nginx/nginx.conf:ro
+    depends_on:
+      - server1
+      - server2
+    networks:
+      - red-app
+
+  # ── MapReduce ────────────────────────────────────────────────────
+  preparador:
+    build: ./mapreduce
+    container_name: preparador
+    volumes:
+      - ./mapreduce:/app
+    depends_on:
+      - nginx
+    command: bash preparador.sh
+    networks:
+      - red-app
+
+  mapper1:
+    build: ./mapreduce
+    container_name: mapper1
+    volumes:
+      - ./mapreduce:/app
+    depends_on:
+      preparador:
+        condition: service_completed_successfully
+    command: python mapper.py splits/part_00.txt
+    networks:
+      - red-app
+
+  mapper2:
+    build: ./mapreduce
+    container_name: mapper2
+    volumes:
+      - ./mapreduce:/app
+    depends_on:
+      preparador:
+        condition: service_completed_successfully
+    command: python mapper.py splits/part_01.txt
+    networks:
+      - red-app
+
+  mapper3:
+    build: ./mapreduce
+    container_name: mapper3
+    volumes:
+      - ./mapreduce:/app
+    depends_on:
+      preparador:
+        condition: service_completed_successfully
+    command: python mapper.py splits/part_02.txt
+    networks:
+      - red-app
+
+  mapper4:
+    build: ./mapreduce
+    container_name: mapper4
+    volumes:
+      - ./mapreduce:/app
+    depends_on:
+      preparador:
+        condition: service_completed_successfully
+    command: python mapper.py splits/part_03.txt
+    networks:
+      - red-app
+
+  reducer:
+    build: ./mapreduce
+    container_name: reducer
+    volumes:
+      - ./mapreduce:/app
+    depends_on:
+      mapper1:
+        condition: service_completed_successfully
+      mapper2:
+        condition: service_completed_successfully
+      mapper3:
+        condition: service_completed_successfully
+      mapper4:
+        condition: service_completed_successfully
+    command: python reducer.py
+    networks:
+      - red-app
+
+volumes:
+  dbdata:
+
+networks:
+  red-app:
+    driver: bridge
